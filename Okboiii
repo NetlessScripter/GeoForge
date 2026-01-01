@@ -15,7 +15,7 @@ orig={}
 ragStart=0
 
 thresh=40
-RAG_TIME=4.1
+RAG_TIME=10
 
 function ch()
 	c=pl.Character or pl.CharacterAdded:Wait()
