@@ -1,0 +1,1108 @@
+local P = game:GetService("Players")
+local TS = game:GetService("TweenService")
+local lp = P.LocalPlayer
+local CP = game:GetService("ContentProvider")
+local RS = game:GetService("ReplicatedStorage")
+local WS = game:GetService("Workspace")
+local uiM = require(lp.PlayerScripts.Client.UI.UIManager)
+local ui = uiM.new(lp.PlayerGui.MainUI)
+
+local t = {
+    "rbxassetid://108307407632074",
+    "rbxassetid://18702401696",
+    "rbxassetid://96127020943905",
+    "rbxassetid://137767105602020",
+    "rbxassetid://129776444939548",
+    "rbxassetid://18702400636",
+    "rbxassetid://102731560381318",
+    "rbxassetid://138845097957088",
+    "rbxassetid://79469974423674",
+    "rbxassetid://131606709385617",
+    "rbxassetid://85287961214592",
+    "rbxassetid://119216849744019",
+    "rbxassetid://118356803581572",
+    "rbxassetid://82795066015990",
+    "rbxassetid://134237590026353"
+}
+
+for _, id in ipairs(t) do
+    local s = Instance.new("Sound")
+    s.SoundId = id
+    s.Volume = 0
+    s.Parent = WS
+    CP:PreloadAsync({s})
+    s:Destroy()
+end
+
+local f = {
+    RS.GameObjects.Decoration,
+    RS.GameObjects.Hazards,
+    RS.GameObjects.Particles,
+    RS.GameObjects.Specials
+}
+
+local a = {}
+for _, v in ipairs(f) do
+    for _, o in ipairs(v:GetDescendants()) do
+        table.insert(a,o)
+    end
+end
+
+CP:PreloadAsync(a)
+
+-- FPS Improver
+
+do
+    local function sgs(n) local ok,s=pcall(game.GetService,game,n) return ok and s or nil end
+    local cs,rs,players,lg,us,TS = sgs("CollectionService"), sgs("RunService"), sgs("Players"), sgs("Lighting"), sgs("UserInputService"), sgs("TweenService")
+    if not cs or not rs or not players or not TS then warn("PerfMaster: missing services") return end
+    local ugs; pcall(function() ugs = UserSettings():GetService("UserGameSettings") end)
+    local plr = players.LocalPlayer or players:WaitForChild("LocalPlayer",5)
+    local function cam() return workspace.CurrentCamera or workspace:FindFirstChildWhichIsA("Camera") end
+
+    local TAG = "PerfCull"
+    local BASE_STEP = 12
+    local BATCH_WAIT_MIN = 0.00045
+    local BATCH_WAIT_MAX = 0.006
+    local RD_DESKTOP, RD_MOBILE, RD_MIN = 3000,1200,240
+    local LOD_D_DESKTOP, LOD_D_MOBILE = 880,560
+    local OCC_INTERVAL_LOW, OCC_INTERVAL_HIGH = 1.3,0.22
+    local FPS_SAMPLE = 0.8
+    local TARGET_DESKTOP, TARGET_MOBILE = 140,60
+    local ADAPT = 0.90
+    local PARTICLE_MAX_DESKTOP, PARTICLE_MAX_MOBILE = 48,16
+    local PARTICLE_DISABLE_D_DESKTOP, PARTICLE_DISABLE_D_MOBILE = 1800,800
+    local SOUND_DISABLE_D_DESKTOP, SOUND_DISABLE_D_MOBILE = 1800,800
+    local DECAL_DISABLE_D_DESKTOP, DECAL_DISABLE_D_MOBILE = 1600,700
+    local LIGHT_DISABLE_D_DESKTOP, LIGHT_DISABLE_D_MOBILE = 2000,800
+    local SHADOWS_OFF_IF_FPS_BELOW = 48
+    local WARMUP_S = 1.0
+    local FADE_SHORT, FADE_LONG = 0.06,0.12
+    local UI_SAVE_KEY = "PerfModeEnabled"
+    local MAX_RAYCASTS_PER_FRAME = 5
+    local MAX_TWEENS_ACTIVE = 10
+    local INSTANT_FADE_PART_COUNT = 28
+    local WORKER_POOL = 4
+    local AWARDMODE_RD_SCALE = 0.45
+    local PANIC_FPS = 20
+
+    local cache = setmetatable({}, { __mode = "k" })
+    local list = {}
+    local rd = RD_DESKTOP
+    local rd2 = rd*rd
+    local LOD_D = LOD_D_DESKTOP
+    local LOD_D2 = LOD_D*LOD_D
+    local particleMax = PARTICLE_MAX_DESKTOP
+    local particleDisableD = PARTICLE_DISABLE_D_DESKTOP
+    local soundDisableD = SOUND_DISABLE_D_DESKTOP
+    local decalDisableD = DECAL_DISABLE_D_DESKTOP
+    local lightDisableD = LIGHT_DISABLE_D_DESKTOP
+    local TARGET = TARGET_DESKTOP
+    local occInterval = OCC_INTERVAL_HIGH
+    local step = BASE_STEP
+    local lastSample = tick()
+    local frameCount = 0
+    local avgFPS = TARGET_DESKTOP
+    local perfOn = true
+    local debugLog = false
+    local activeTweens = 0
+    local raycastsLeft = MAX_RAYCASTS_PER_FRAME
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+
+    local awardMode = false
+    local panicMode = false
+
+    local pool = {}
+    local function alloc()
+        return table.remove(pool) or {}
+    end
+    local function free(t)
+        for k in pairs(t) do t[k] = nil end
+        pool[#pool+1] = t
+    end
+
+    local function sqrmag(a,b)
+        local dx = a.X-b.X; local dy = a.Y-b.Y; local dz = a.Z-b.Z
+        return dx*dx+dy*dy+dz*dz
+    end
+
+    local function detectPlatform()
+        local isTouch = false
+        pcall(function() isTouch = us and us.TouchEnabled end)
+        if isTouch then
+            TARGET = TARGET_MOBILE
+            rd = RD_MOBILE
+            LOD_D = LOD_D_MOBILE
+            particleMax = PARTICLE_MAX_MOBILE
+            particleDisableD = PARTICLE_DISABLE_D_MOBILE
+            soundDisableD = SOUND_DISABLE_D_MOBILE
+            decalDisableD = DECAL_DISABLE_D_MOBILE
+            lightDisableD = LIGHT_DISABLE_D_MOBILE
+            occInterval = OCC_INTERVAL_LOW
+            return "mobile"
+        else
+            TARGET = TARGET_DESKTOP
+            rd = RD_DESKTOP
+            LOD_D = LOD_D_DESKTOP
+            particleMax = PARTICLE_MAX_DESKTOP
+            particleDisableD = PARTICLE_DISABLE_D_DESKTOP
+            soundDisableD = SOUND_DISABLE_D_DESKTOP
+            decalDisableD = DECAL_DISABLE_D_DESKTOP
+            lightDisableD = LIGHT_DISABLE_D_DESKTOP
+            occInterval = OCC_INTERVAL_HIGH
+            return "desktop"
+        end
+    end
+
+    local function mkc(m)
+        if not m or not m.Parent or cache[m] then return end
+        local ok,desc = pcall(function() return m:GetDescendants() end)
+        if not ok then desc = {} end
+        local t = { parts = {}, emit = {}, sounds = {}, decals = {}, lights = {}, guis = {}, lowDesc = nil, highDesc = nil, lastOc = 0, oc = false, lastD = 1e9, lod = "high", partCount = 0, freq = 0, ticket = 0, prim = nil }
+        local pc = 0
+        for i=1,#desc do
+            local v = desc[i]
+            if type(v) == "Instance" then
+                if v:IsA("BasePart") then pc = pc + 1; t.parts[v] = v.LocalTransparencyModifier or 0 end
+                if v:IsA("ParticleEmitter") then t.emit[v] = { on = v.Enabled, rate = v.Rate or 0 } end
+                if v:IsA("Sound") then t.sounds[v] = { on = v.Playing, vol = v.Volume or 1 } end
+                if v.ClassName == "Decal" or v.ClassName == "Texture" then t.decals[v] = v.Transparency or 0 end
+                if v:IsA("Light") then t.lights[v] = v.Enabled end
+                if v:IsA("BillboardGui") or v:IsA("SurfaceGui") then t.guis[v] = v.Enabled end
+            end
+        end
+        t.partCount = pc
+        local okLow, low = pcall(function() return m:FindFirstChild("LOD_LOW") end)
+        t.lowDesc = okLow and low and low:GetDescendants() or nil
+        local okHigh, high = pcall(function() return m:FindFirstChild("LOD_HIGH") end)
+        t.highDesc = okHigh and high and high:GetDescendants() or nil
+        local okPrim, p = pcall(function() return m.PrimaryPart end)
+        if okPrim and p then t.prim = p else t.prim = m:FindFirstChildWhichIsA("BasePart") end
+        cache[m] = t
+    end
+
+    local function clean(m) cache[m] = nil end
+
+    local function safeTween(p,to,fast)
+        if not p or not p.Parent then return end
+        if activeTweens >= MAX_TWEENS_ACTIVE then p.LocalTransparencyModifier = to; return end
+        local info = TweenInfo.new(fast and FADE_SHORT or FADE_LONG, Enum.EasingStyle.Linear)
+        local ok, tw = pcall(function() return TS:Create(p, info, { LocalTransparencyModifier = to }) end)
+        if not ok or not tw then p.LocalTransparencyModifier = to; return end
+        activeTweens = activeTweens + 1
+        tw.Completed:Connect(function() activeTweens = math.max(0, activeTweens - 1) end)
+        pcall(function() tw:Play() end)
+    end
+
+    local function doHideHigh(m,t)
+        if not t then return end
+        local instant = (t.partCount and t.partCount > INSTANT_FADE_PART_COUNT)
+        for p,_ in pairs(t.parts) do if p and p.Parent then if instant then p.LocalTransparencyModifier = 1 else safeTween(p,1,true) end end end
+        for e,_ in pairs(t.emit) do if e and e.Parent then e.Enabled = false end end
+        for s,_ in pairs(t.sounds) do if s and s.Parent then s.Playing = false end end
+        for d,_ in pairs(t.decals) do if d and d.Parent then d.Transparency = 1 end end
+        for l,_ in pairs(t.lights) do if l and l.Parent then l.Enabled = false end end
+        for g,_ in pairs(t.guis) do if g and g.Parent then g.Enabled = false end end
+        if t.lowDesc and t.highDesc then
+            for i=1,#t.lowDesc do local v=t.lowDesc[i] if v:IsA("BasePart") then v.LocalTransparencyModifier = 0 end; if v:IsA("ParticleEmitter") then v.Enabled = true end end
+            for i=1,#t.highDesc do local v=t.highDesc[i] if v:IsA("BasePart") then if instant then v.LocalTransparencyModifier = 1 else safeTween(v,1,true) end end; if v:IsA("ParticleEmitter") then v.Enabled = false end end
+            t.lod = "low"; return
+        end
+        t.lod = "hidden"
+    end
+
+    local function doShowHigh(m,t)
+        if not t then return end
+        local instant = (t.partCount and t.partCount > INSTANT_FADE_PART_COUNT)
+        for p,old in pairs(t.parts) do if p and p.Parent then if instant then p.LocalTransparencyModifier = old else safeTween(p,old,true) end end end
+        for e,old in pairs(t.emit) do if e and e.Parent then e.Enabled = old.on end end
+        for s,old in pairs(t.sounds) do if s and s.Parent then s.Playing = old.on; s.Volume = old.vol end end
+        for d,old in pairs(t.decals) do if d and d.Parent then d.Transparency = old end end
+        for l,old in pairs(t.lights) do if l and l.Parent then l.Enabled = old end end
+        for g,old in pairs(t.guis) do if g and g.Parent then g.Enabled = old end end
+        if t.lowDesc and t.highDesc then
+            for i=1,#t.lowDesc do local v=t.lowDesc[i] if v:IsA("BasePart") then v.LocalTransparencyModifier = 1 end; if v:IsA("ParticleEmitter") then v.Enabled = false end end
+            for i=1,#t.highDesc do local v=t.highDesc[i] if v:IsA("BasePart") then if instant then v.LocalTransparencyModifier = 0 else safeTween(v,0,true) end end; if v:IsA("ParticleEmitter") then v.Enabled = true end end
+            t.lod = "high"; return
+        end
+        t.lod = "shown"
+    end
+
+    local function inView(pos)
+        local c = cam()
+        if not c then return true end
+        local ok,x,y,on = pcall(function() return c:WorldToViewportPoint(pos) end)
+        return ok and on
+    end
+
+    local function cheapOccl(m,t,prim,camPos)
+        if not t or not prim then return false end
+        local now = tick()
+        if now - t.lastOc < occInterval then return t.oc end
+        t.lastOc = now
+        local c = cam()
+        if not c then t.oc = false; return false end
+        if not inView(prim.Position) then t.oc = true; return true end
+        if raycastsLeft <= 0 then t.oc = false; return false end
+        raycastsLeft = raycastsLeft - 1
+        local ok, r = pcall(function() return workspace:Raycast(c.CFrame.Position, prim.Position - c.CFrame.Position, rayParams) end)
+        if not ok then t.oc = false; return false end
+        t.oc = not (r and r.Instance and r.Instance:IsDescendantOf(m))
+        return t.oc
+    end
+
+    local function applyBudget(t,d)
+        if not t then return end
+        for e,data in pairs(t.emit) do if e and e.Parent then if d > particleDisableD then e.Enabled = false else e.Enabled = data.on; if e.Rate and e.Rate > particleMax then e.Rate = particleMax end end end end
+        for s,data in pairs(t.sounds) do if s and s.Parent then if d > soundDisableD then s.Playing = false else s.Playing = data.on; if s.Volume and s.Volume > 1 then s.Volume = 1 end end end end
+        for dec,old in pairs(t.decals) do if dec and dec.Parent then local ok,cp = pcall(function() return cam().CFrame.Position end); if ok then local pd = sqrmag(cp, dec.Parent.Position); if pd > decalDisableD*decalDisableD then dec.Transparency = 1 else dec.Transparency = old end else dec.Transparency = old end end end
+        for l,old in pairs(t.lights) do if l and l.Parent then if d > lightDisableD then l.Enabled = false else l.Enabled = old end end end
+    end
+
+    local function processOne(m)
+        if not m or not m.Parent then clean(m); return end
+        local t = cache[m]; if not t then return end
+        local p = t.prim
+        if not p or not p.Parent then p = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart"); t.prim = p end
+        if not p then return end
+        local c = cam()
+        if not c or not c.CFrame then return end
+        local camPos = c.CFrame.Position
+        local d2 = sqrmag(camPos, p.Position)
+        t.lastD = math.sqrt(d2)
+        if d2 > rd2 then
+            if t.lod ~= "low" and t.lod ~= "hidden" then doHideHigh(m,t) end
+            applyBudget(t, math.sqrt(d2))
+            t.freq = math.min(12, math.max(6, math.floor(math.sqrt(d2) / 300)))
+            return
+        end
+        if d2 > LOD_D2 then
+            local occ = cheapOccl(m,t,p,camPos)
+            applyBudget(t, math.sqrt(d2))
+            if occ and t.lod ~= "low" then doHideHigh(m,t); return end
+            if (not occ) and t.lod ~= "high" then doShowHigh(m,t); return end
+            t.freq = math.max(2, math.floor(math.sqrt(d2) / 250))
+            return
+        end
+        applyBudget(t, math.sqrt(d2))
+        if t.lod ~= "high" then doShowHigh(m,t) end
+        t.freq = 0
+    end
+
+    local function rebuild()
+        local ok,arr = pcall(function() return cs:GetTagged(TAG) end)
+        list = {}
+        if ok and arr then
+            for i=1,#arr do local m = arr[i]; if m and m.Parent then mkc(m); list[#list+1] = m end end
+        end
+    end
+
+    cs:GetInstanceAddedSignal(TAG):Connect(function(m) if m then mkc(m) end end)
+    cs:GetInstanceRemovedSignal(TAG):Connect(function(m) if m then clean(m) end end)
+
+    local function adaptFPS()
+        frameCount = frameCount + 1
+        local now = tick()
+        if now - lastSample >= FPS_SAMPLE then
+            avgFPS = frameCount / (now - lastSample)
+            frameCount = 0
+            lastSample = now
+            if avgFPS < TARGET - 6 then
+                rd = math.max(RD_MIN, rd * ADAPT)
+            elseif avgFPS > TARGET + 6 then
+                rd = math.min(RD_DESKTOP, rd / ADAPT)
+            end
+            rd2 = rd * rd
+            local ratio = math.max(0.18, math.min(2.8, avgFPS / math.max(1, TARGET)))
+            step = math.max(4, math.floor(BASE_STEP * ratio))
+            if debugLog then pcall(function() print("PerfMaster fps", math.floor(avgFPS), "rd", math.floor(rd), "step", step) end) end
+            panicMode = avgFPS < PANIC_FPS
+            if panicMode then
+                rd = math.max(RD_MIN * 0.5, rd * 0.6)
+                rd2 = rd*rd
+                setmetatable(cache, {__mode="k"})
+            end
+        end
+    end
+
+    local function setShadows(on) pcall(function() if lg then lg.GlobalShadows = on end end) end
+
+    local function warmupFPS()
+        local s = tick(); local c = 0; local tot = 0
+        while tick() - s < WARMUP_S do
+            local a = rs.Heartbeat:Wait()
+            c = c + 1
+            tot = tot + (1 / math.max(0.0001, a))
+        end
+        return tot / math.max(1, c)
+    end
+
+    local function initProfile()
+        detectPlatform()
+        local warm = warmupFPS()
+        if warm < SHADOWS_OFF_IF_FPS_BELOW then setShadows(false) else setShadows(true) end
+        if debugLog then pcall(function() print("PerfMaster warmFPS", math.floor(warm)) end) end
+    end
+
+    local function setPerfOn(v)
+        perfOn = v and true or false
+        if not perfOn then
+            rd = RD_DESKTOP; rd2 = rd*rd
+            setShadows(true)
+            for m,t in pairs(cache) do if m and m.Parent then doShowHigh(m,t) end end
+        else
+            rd = (us and us.TouchEnabled) and RD_MOBILE or RD_DESKTOP
+            rd2 = rd*rd
+            task.spawn(initProfile)
+        end
+        if plr and plr.SetAttribute then pcall(function() plr:SetAttribute(UI_SAVE_KEY, perfOn) end) end
+    end
+
+    local function toggleAward()
+        awardMode = not awardMode
+        if awardMode then
+            rd = math.max(RD_MIN, math.floor(rd * AWARDMODE_RD_SCALE))
+            rd2 = rd*rd
+            setShadows(false)
+            particleMax = 8
+            for _,m in pairs(cache) do
+                for e,_ in pairs(m.emit) do if e and e.Parent then e.Enabled = false end end
+            end
+        else
+            detectPlatform()
+            task.spawn(initProfile)
+        end
+    end
+
+    local function buildUI()
+       
+    end
+
+    local function loadSaved()
+        if plr and plr.GetAttribute then
+            local ok, v = pcall(function() return plr:GetAttribute(UI_SAVE_KEY) end)
+            if ok and type(v) == "boolean" then perfOn = v else perfOn = true end
+        end
+    end
+
+    task.spawn(function()
+        pcall(initProfile)
+        pcall(loadSaved)
+        pcall(buildUI)
+        rebuild()
+        local idx = 1
+        local q = {}
+        local running = true
+
+        local function worker()
+            while running do
+                local job = table.remove(q)
+                if job then
+                    processOne(job)
+                else
+                    task.wait()
+                end
+            end
+        end
+
+        for i=1,WORKER_POOL do task.spawn(worker) end
+
+        while true do
+            raycastsLeft = MAX_RAYCASTS_PER_FRAME
+            adaptFPS()
+            if not perfOn then
+                task.wait()
+                rs.Heartbeat:Wait()
+                continue
+            end
+
+            if #list == 0 then rebuild() end
+            local camPos = cam() and cam().CFrame and cam().CFrame.Position or Vector3.new(0,0,0)
+
+            local n = #list
+            if n > 0 then
+                local sample = math.min(n, step * 3)
+                local tmp = alloc()
+                for i=1,n do
+                    local m = list[i]; local t = cache[m]
+                    if t and t.prim then
+                        tmp[#tmp+1] = {m = m, d = sqrmag(camPos, t.prim.Position)}
+                    end
+                end
+                table.sort(tmp, function(a,b) return a.d < b.d end)
+                for i=1,math.min(#tmp, sample) do q[#q+1] = tmp[i].m end
+                free(tmp)
+            end
+
+            for i=1, step do
+                if #list == 0 then break end
+                local m = list[idx]
+                if not m or not m.Parent then rebuild(); break end
+                local t = cache[m]
+                if t then
+                    t.ticket = (t.ticket or 0) + 1
+                    if t.freq == 0 then q[#q+1] = m
+                    else
+                        if (t.ticket % (t.freq + 1)) == 0 then q[#q+1] = m end
+                    end
+                end
+                idx = idx + 1
+                if idx > #list then idx = 1 end
+            end
+
+            local waitAmt = math.max(BATCH_WAIT_MIN, math.min(BATCH_WAIT_MAX, 0.001 * (BASE_STEP / math.max(1, step))))
+            task.wait() -- NOTE TO MYSELF: Re add waitAmt if it turns out to make the performance worse.
+
+            if panicMode then
+                setShadows(false)
+                if not awardMode then
+                    particleMax = math.max(6, math.floor(particleMax * 0.45))
+                    for m,t in pairs(cache) do
+                        for e,_ in pairs(t.emit) do if e and e.Parent then e.Enabled = false end end
+                    end
+                end
+            end
+
+            rs.Heartbeat:Wait()
+        end
+    end)
+end
+
+-- More Preloading
+
+do
+    local bag = {}
+
+    local function put(x)
+        if typeof(x) == "Instance" then
+            bag[#bag+1] = x
+        end
+    end
+
+    local SS = game:GetService("SoundService")
+    local LG = game:GetService("Lighting")
+
+    put(WS)
+    put(RS)
+    put(SS)
+    put(LG)
+    put(lp.PlayerGui)
+
+    for _, v in ipairs(WS:GetDescendants()) do put(v) end
+    for _, v in ipairs(RS:GetDescendants()) do put(v) end
+    for _, v in ipairs(SS:GetDescendants()) do put(v) end
+    for _, v in ipairs(LG:GetDescendants()) do put(v) end
+    for _, v in ipairs(lp.PlayerGui:GetDescendants()) do put(v) end
+
+    local preload = {}
+
+    for i=1,#bag do
+        local v = bag[i]
+
+        if v:IsA("Sound") then
+            local vol = v.Volume
+            v.Volume = 0
+            preload[#preload+1] = v
+            v.Volume = vol
+
+        elseif v:IsA("ImageLabel")
+        or v:IsA("ImageButton")
+        or v:IsA("Decal")
+        or v:IsA("Texture")
+        or v:IsA("Sky")
+        or v:IsA("ParticleEmitter")
+        or v:IsA("Trail")
+        or v:IsA("Beam")
+        or v:IsA("ViewportFrame")
+        or v:IsA("SurfaceGui")
+        or v:IsA("BillboardGui")
+        or v:IsA("Animation")
+        or v:IsA("MeshPart")
+        or v:IsA("SpecialMesh") then
+            preload[#preload+1] = v
+        end
+    end
+
+    pcall(function()
+        CP:PreloadAsync(preload)
+    end)
+
+    local function late(x)
+        if x:IsA("Sound")
+        or x:IsA("ImageLabel")
+        or x:IsA("ImageButton")
+        or x:IsA("Decal")
+        or x:IsA("Texture")
+        or x:IsA("Sky")
+        or x:IsA("ParticleEmitter")
+        or x:IsA("Trail")
+        or x:IsA("Beam")
+        or x:IsA("ViewportFrame")
+        or x:IsA("SurfaceGui")
+        or x:IsA("BillboardGui")
+        or x:IsA("MeshPart")
+        or x:IsA("SpecialMesh")
+        or x:IsA("Animation") then
+            pcall(function()
+                CP:PreloadAsync({x})
+            end)
+        end
+    end
+
+    WS.DescendantAdded:Connect(late)
+    RS.DescendantAdded:Connect(late)
+    SS.DescendantAdded:Connect(late)
+    lp.PlayerGui.DescendantAdded:Connect(late)
+end
+
+-- Preload CustomizationMenu assets
+do
+    local customMenu = lp.PlayerGui:WaitForChild("MainUI"):WaitForChild("States"):WaitForChild("CustomizationMenu")
+    local bag = {}
+
+    local function put(x)
+        if typeof(x) == "Instance" then
+            bag[#bag+1] = x
+        end
+    end
+
+    put(customMenu)
+    for _, v in ipairs(customMenu:GetDescendants()) do
+        put(v)
+    end
+
+    local preload = {}
+    for i=1,#bag do
+        local v = bag[i]
+        if v:IsA("ImageLabel")
+        or v:IsA("ImageButton")
+        or v:IsA("Decal")
+        or v:IsA("Texture")
+        or v:IsA("VideoFrame")
+        or v:IsA("ParticleEmitter")
+        or v:IsA("Trail")
+        or v:IsA("Beam")
+        or v:IsA("ViewportFrame")
+        or v:IsA("SurfaceGui")
+        or v:IsA("BillboardGui")
+        or v:IsA("MeshPart")
+        or v:IsA("SpecialMesh")
+        or v:IsA("Animation")
+        or v:IsA("Sound") then
+            preload[#preload+1] = v
+        end
+    end
+
+    pcall(function()
+        CP:PreloadAsync(preload)
+    end)
+
+    local function late(x)
+        if x:IsA("ImageLabel")
+        or x:IsA("ImageButton")
+        or x:IsA("Decal")
+        or x:IsA("Texture")
+        or x:IsA("VideoFrame")
+        or x:IsA("ParticleEmitter")
+        or x:IsA("Trail")
+        or x:IsA("Beam")
+        or x:IsA("ViewportFrame")
+        or x:IsA("SurfaceGui")
+        or x:IsA("BillboardGui")
+        or x:IsA("MeshPart")
+        or x:IsA("SpecialMesh")
+        or x:IsA("Animation")
+        or x:IsA("Sound") then
+            pcall(function()
+                CP:PreloadAsync({x})
+            end)
+        end
+    end
+
+    customMenu.DescendantAdded:Connect(late)
+end
+
+task.spawn(function()
+-- UI Popup
+ui:PushModal("NotificationModal")
+
+local mainUI = lp.PlayerGui:WaitForChild("MainUI")
+local modals = mainUI:WaitForChild("Modals")
+local n = modals:WaitForChild("NotificationModal")
+
+local title = n:WaitForChild("Title")
+local msg = n:WaitForChild("Message")
+local ok = n:WaitForChild("Ok")
+
+title.Text = "Welcome to GeoForge!"
+msg.Text = "Hey! Thanks for trying out the first early-development version of GeoForge! This version includes an FPS Booster for smoother gameplay on Mobile and PC. Depending on the scripts you use, it will also download MP3s and images directly to your Executor’s Workspace, letting you fully experience user-created content. You may still encounter some bugs, but everything is ready for you to explore and enjoy!"
+
+ok.MouseButton1Click:Connect(function()
+    ui:PopModal()
+end)
+end)
+
+-- Upgraded NONGS
+
+local HttpGet = game.HttpGet or function(self,url) return game:HttpGet(url) end
+local CP = game:GetService("ContentProvider")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
+
+local function safeIsfile(n)
+    local ok, r = pcall(function() return isfile(n) end)
+    if ok then return r end
+    return false
+end
+
+local function safeWritefile(n, b)
+    local ok, r = pcall(function() writefile(n, b) end)
+    return ok
+end
+
+local function safeHttpGet(u)
+    local ok, r = pcall(function() return game:HttpGet(u) end)
+    if ok then return r end
+    return nil
+end
+
+local function assetHelperExists()
+    if typeof(getsynasset) == "function" then return "getsynasset" end
+    if typeof(getcustomasset) == "function" then return "getcustomasset" end
+    return nil
+end
+
+local function getAssetPath(name)
+    local helper = assetHelperExists()
+    if helper == "getsynasset" then
+        return getsynasset(name)
+    elseif helper == "getcustomasset" then
+        return getcustomasset(name)
+    end
+    return nil
+end
+
+local function forChildren(t, fn)
+    local c = t:GetChildren()
+    for i = 1, #c do
+        fn(c[i])
+    end
+end
+
+local function forDescendants(t, fn)
+    local d = t:GetDescendants()
+    for i = 1, #d do
+        fn(d[i])
+    end
+end
+
+local function SoundLink(id, url)
+    local fname = url:match("^.+/(.+)$") or ("sound_"..tostring(math.random(100000,999999)))
+    local downloaded = false
+    if not safeIsfile(fname) then
+        local body = safeHttpGet(url)
+        if body then
+            safeWritefile(fname, body)
+            downloaded = true
+        end
+    else
+        downloaded = true
+    end
+
+    local assetPath = getAssetPath(fname)
+    local mirrors = {}
+    local function killOld(src)
+        local kids = Workspace:GetChildren()
+        for i = 1, #kids do
+            local v = kids[i]
+            if v:IsA("Sound") and v.Name == fname then
+                v:Destroy()
+            end
+        end
+        if src and src:FindFirstChild("MirrorAttached") then
+            src.MirrorAttached:Destroy()
+        end
+    end
+
+    local function makeMirror(src)
+        if not src then return end
+        if src:FindFirstChild("MirrorAttached") then return end
+        killOld(src)
+        src.Volume = 0
+        local s = Instance.new("Sound")
+        s.Name = fname
+        if assetPath then
+            s.SoundId = assetPath
+        else
+            s.SoundId = id
+        end
+        s.Volume = 1
+        s.Looped = src.Looped
+        s.PlaybackSpeed = src.PlaybackSpeed
+        s.TimePosition = src.TimePosition
+        s.Parent = Workspace
+        local tag = Instance.new("BoolValue")
+        tag.Name = "MirrorAttached"
+        tag.Parent = src
+        mirrors[src] = {mirror = s, tag = tag}
+        local dead = false
+        local function sync()
+            if dead then return end
+            if not src.Parent then
+                dead = true
+                if s and s.Parent then pcall(function() s:Destroy() end) end
+                if tag and tag.Parent then pcall(function() tag:Destroy() end) end
+                mirrors[src] = nil
+                return
+            end
+            if pcall(function() s.Looped = src.Looped end) then end
+            if pcall(function() s.PlaybackSpeed = src.PlaybackSpeed end) then end
+            if pcall(function() s.TimePosition = src.TimePosition end) then end
+            if src.Playing and not s.Playing then
+                pcall(function() s:Play() end)
+            elseif not src.Playing and s.Playing then
+                pcall(function() s:Pause() end)
+            end
+        end
+        local con1 = src:GetPropertyChangedSignal("Playing"):Connect(sync)
+        local con2 = src:GetPropertyChangedSignal("TimePosition"):Connect(function()
+            if not dead then
+                pcall(function() s.TimePosition = src.TimePosition end)
+            end
+        end)
+        local con3 = src.AncestryChanged:Connect(function(_, parent)
+            if not parent then
+                dead = true
+                pcall(function() s:Destroy() end)
+                pcall(function() tag:Destroy() end)
+                if con1 then con1:Disconnect() end
+                if con2 then con2:Disconnect() end
+                if con3 then con3:Disconnect() end
+                mirrors[src] = nil
+            end
+        end)
+        sync()
+    end
+
+    local function watchContainer(c)
+        forDescendants(c, function(v)
+            if v:IsA("Sound") and v.SoundId == id then
+                makeMirror(v)
+            end
+        end)
+        c.DescendantAdded:Connect(function(v)
+            if v:IsA("Sound") and v.SoundId == id then
+                makeMirror(v)
+            end
+        end)
+    end
+
+    watchContainer(Workspace)
+    watchContainer(ReplicatedStorage)
+    watchContainer(SoundService)
+end
+
+SoundLink("rbxassetid://97722189026920","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/menuLoop.mp3")
+SoundLink("rbxassetid://90857389011398","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/BaseAfterBase.mp3")
+SoundLink("rbxassetid://96127020943905","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/TimeMachine.mp3")
+SoundLink("rbxassetid://138845097957088","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/TheoryOfEverything2.mp3")
+SoundLink("rbxassetid://119903685772042","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/StereoMadness.mp3")
+SoundLink("rbxassetid://5409360995","https://storage.hpsk.me/api/bucket/file/4a56983131a9?download=true&name=1266014")
+SoundLink("rbxassetid://18702397131","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/467339_At_the_Speed_of_Light_FINA%202.mp3")
+SoundLink("rbxassetid://111728340039470","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Deadlocked.mp3")
+SoundLink("rbxassetid://102731560381318","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/BackOnTrack.mp3")
+SoundLink("rbxassetid://18840208115","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/explorers.mp3")
+SoundLink("rbxassetid://138346481623967","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Polargeist.mp3")
+SoundLink("rbxassetid://18702400636","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/DryOut.mp3")
+SoundLink("rbxassetid://129776444939548","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/CantLetGo.mp3")
+SoundLink("rbxassetid://137767105602020","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Jumper.mp3")
+SoundLink("rbxassetid://18702401696","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Cycles.mp3")
+SoundLink("rbxassetid://108307407632074","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/xStep.mp3")
+SoundLink("rbxassetid://134237590026353","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Clutterfunk.mp3")
+SoundLink("rbxassetid://118356803581572","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/TheoryOfEverything.mp3")
+SoundLink("rbxassetid://82795066015990","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Electroman.mp3")
+SoundLink("rbxassetid://119216849744019","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Clubstep.mp3")
+SoundLink("rbxassetid://85287961214592","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Electrodynamix.mp3")
+SoundLink("rbxassetid://131606709385617","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/HexagonForce.mp3")
+SoundLink("rbxassetid://79469974423674","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/BlastProcessing.mp3")
+SoundLink("rbxassetid://107236577178241","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/Dash.mp3")
+SoundLink("rbxassetid://100478063537744","https://raw.githubusercontent.com/NetlessScripter/GeoForge/refs/heads/main/GeometricalDominator.mp3")
+
+-- Image Changing (IC)
+local url = "https://raw.githubusercontent.com/NetlessScripter/Explorers/refs/heads/main/IMG_0051.png"
+local fileName = "TitleImage.png"
+
+if not isfile(fileName) then
+    writefile(fileName, game:HttpGet(url))
+end
+
+local imageAsset = getsynasset and getsynasset(fileName) or getcustomasset(fileName)
+
+local mainMenu = lp.PlayerGui:WaitForChild("MainUI"):WaitForChild("States"):WaitForChild("MainMenu")
+local title = mainMenu:WaitForChild("Title")
+
+title.Image = imageAsset
+title.Size = UDim2.new(1.19599998, 0, 0.177000001, 0)
+
+-- deadass add more images if u need em (styles soon do not change CBF unless you know what your doing it)
+local uis = game:GetService("UserInputService")
+local rs = RS
+local plr = lp
+
+local cfg = {
+    cap = 2000,            -- keep extremely high, basically unlimited for humans
+    per = 1,                -- 1 second window, standard
+    micro = 1e6,            -- leave as microsecond scale
+    physicsHz = 500,        -- push internal step rate way up for sub-frame precision
+    clickOnSteps = false,   -- false: process every sub-step, not just when input exists
+    lateCutoff = true,      -- true: inputs treated at the very last possible moment
+    mouseFix = true,        -- true: prevents lag from excessive mouse movement
+    allowRightClick = false,-- false: ignore right clicks for consistent behavior
+    spamLimitEnabled = false,-- disable limiter to allow max burst inputs
+    capBurst = 50           -- allow bigger bursts beyond cap for peak input frames
+}
+
+local q = {}      -- inputQueue (deque emulated)
+local sq = {}     -- stepQueue
+local lastFrame = 0
+local curFrame = 0
+local first = true
+local skip = true
+local enInput = true
+local bucket = 0
+local t0 = tick()
+local char, hum
+local mouse = plr:GetMouse()
+local bindable = Instance.new("BindableEvent") -- other scripts can listen: bindable.Event
+bindable.Name = "CBF_InputEvent"
+bindable.Parent = script
+
+local function now()
+    return math.floor(tick() * cfg.micro)
+end
+
+local function refreshChar()
+    char = plr.Character or plr.CharacterAdded:Wait()
+    hum = char:FindFirstChildOfClass("Humanoid")
+end
+
+refreshChar()
+plr.CharacterAdded:Connect(refreshChar)
+
+local function doAct(ev)
+    -- default action: jump
+    if hum and hum.Health > 0 then
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+    -- notify other client scripts
+    bindable:Fire(ev)
+end
+
+local function pushInput(t,typ,state)
+    q[#q+1] = {time = t, ttype = typ or "jump", state = state == nil and true or state}
+end
+
+local function popFront(tbl)
+    if #tbl == 0 then return nil end
+    local v = tbl[1]
+    for i=1,#tbl-1 do tbl[i] = tbl[i+1] end
+    tbl[#tbl] = nil
+    return v
+end
+
+-- input listeners
+uis.InputBegan:Connect(function(i,gpe)
+    if gpe then return end
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        pushInput(now(), "jump", true)
+    elseif i.UserInputType == Enum.UserInputType.Touch then
+        pushInput(now(), "jump", true)
+    elseif i.KeyCode == Enum.KeyCode.Space then
+        pushInput(now(), "jump", true)
+    elseif cfg.allowRightClick and i.UserInputType == Enum.UserInputType.MouseButton2 then
+        pushInput(now(), "jump", true)
+    end
+end)
+
+-- extra Mouse hook for reliability
+mouse.Button1Down:Connect(function()
+print("click haha")
+    pushInput(now(), "jump", true)
+end)
+
+-- optional mouse-move debouncer (best-effort)
+if cfg.mouseFix then
+    local lm = 0
+    uis.InputChanged:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseMovement then
+            local t = tick()
+            if t - lm < (1/1000) then return end
+            lm = t
+        end
+    end)
+end
+
+-- spam limiter bucket
+local function trackSpam()
+    local cur = tick()
+    if cur - t0 > cfg.per then
+        t0 = cur
+        bucket = 0
+    end
+    bucket = bucket + 1
+    if cfg.spamLimitEnabled and bucket > cfg.cap + cfg.capBurst then
+        return false
+    end
+    return true
+end
+
+-- core: build step queue from input queue based on stepCount
+local function buildStepQueue(stepCount)
+    local nowt = now()
+    if cfg.lateCutoff then
+        curFrame = nowt
+        -- copy everything
+        local copy = {}
+        for i=1,#q do copy[#copy+1] = q[i] end
+        q = {}
+        -- create steps
+        if first then
+            first = false
+            lastFrame = curFrame
+            return
+        end
+        local delta = curFrame - lastFrame
+        if delta <= 0 then delta = 1 end
+        local stepDelta = math.floor(delta / math.max(1, stepCount))
+        local idx = 1
+        local elapsedFrac = 0
+        for s=1, stepCount do
+            local elapsed = 0
+            while #copy > 0 do
+                local front = copy[1]
+                local rel = front.time - lastFrame
+                if rel < stepDelta * s then
+                    local inputTime = ((front.time - lastFrame) % stepDelta) / (stepDelta ~= 0 and stepDelta or 1)
+                    local df = math.max(1e-9, math.min(1.0, inputTime - elapsed))
+                    sq[#sq+1] = {input = front, deltaFactor = df, endStep = false}
+                    table.remove(copy,1)
+                    elapsed = inputTime
+                else break end
+            end
+            sq[#sq+1] = {input = {time = 0}, deltaFactor = math.max(1e-9, 1.0 - elapsed), endStep = true}
+        end
+        lastFrame = curFrame
+    else
+        curFrame = nowt
+        if first then
+            first = false
+            lastFrame = curFrame
+            return
+        end
+        local copy = {}
+        while #q > 0 and q[1].time <= curFrame do
+            copy[#copy+1] = q[1]
+            table.remove(q,1)
+        end
+        local delta = curFrame - lastFrame
+        if delta <= 0 then delta = 1 end
+        local stepDelta = math.floor(delta / math.max(1, stepCount))
+        local elapsedFrac = 0
+        for s=1, stepCount do
+            local elapsed = 0
+            while #copy > 0 do
+                local front = copy[1]
+                local rel = front.time - lastFrame
+                if rel < stepDelta * s then
+                    local inputTime = ((front.time - lastFrame) % stepDelta) / (stepDelta ~= 0 and stepDelta or 1)
+                    local df = math.max(1e-9, math.min(1.0, inputTime - elapsed))
+                    sq[#sq+1] = {input = front, deltaFactor = df, endStep = false}
+                    table.remove(copy,1)
+                    elapsed = inputTime
+                else break end
+            end
+            sq[#sq+1] = {input = {time = 0}, deltaFactor = math.max(1e-9, 1.0 - elapsed), endStep = true}
+        end
+        lastFrame = curFrame
+    end
+end
+
+-- pop and process steps
+local function popStep()
+    if #sq == 0 then return end
+    local front = sq[1]
+    if front == nil then return end
+    if front.input and front.input.time and front.input.time ~= 0 then
+        enInput = true
+        doAct(front.input)
+        enInput = false
+    end
+    table.remove(sq,1)
+end
+
+-- calculate how many sub-steps to split frame into
+local avgDelta = 0
+local function calcSteps(dt)
+    local target = cfg.physicsHz
+    avgDelta = (0.05 * dt) + (0.95 * avgDelta)
+    local animationInterval = 1 / math.max(30, rs.RenderStepped:Wait()) -- dummy, will not run; fallback below
+    -- fallback simple logic:
+    local steps = math.max(1, math.floor(dt * cfg.physicsHz + 0.5))
+    return steps
+end
+
+-- main loop: Heartbeat builds queue and processes steps
+local acc = 0
+rs.Heartbeat:Connect(function(dt)
+    local ok = true
+    -- handle spam bucket warmup via t0
+    if not trackSpam() then return end
+    local steps = math.max(1, math.floor(dt * cfg.physicsHz + 0.5))
+    buildStepQueue(steps)
+    if cfg.clickOnSteps and #sq == 0 then
+        -- nothing to do
+        return
+    end
+    -- process steps: if there are inputs, process all steps until next endStep (emulate popStepQueue loop)
+    while #sq > 0 do
+        local s = sq[1]
+        popStep()
+    end
+end)
+
+-- helper API for external control
+local api = {}
+api.ToggleClickOnSteps = function(v) cfg.clickOnSteps = v end
+api.ToggleLateCutoff = function(v) cfg.lateCutoff = v end
+api.SetCap = function(n) cfg.cap = n end
+api.ForceProcessAll = function()
+    -- process any queued inputs immediately
+    while #q > 0 do
+        sq = {}
+        buildStepQueue(16)
+        while #sq > 0 do popStep() end
+    end
+end
+script:SetAttribute("CBF_API", true)
+script:SetAttribute("CBF_Running", true)
+
+-- make api available to other LocalScripts via BindableFunction
+local bfn = Instance.new("BindableFunction")
+bfn.Name = "CBF_API"
+bfn.Parent = script
+bfn.OnInvoke = function(action, arg)
+    if action == "toggleClickOnSteps" then api.ToggleClickOnSteps( not cfg.clickOnSteps ) return true end
+    if action == "toggleLateCutoff" then api.ToggleLateCutoff( not cfg.lateCutoff ) return true end
+    if action == "setCap" then api.SetCap(tonumber(arg) or cfg.cap) return true end
+    if action == "forceProcessAll" then api.ForceProcessAll() return true end
+    return false
+end
+
+-- small alive watchdog to keep character refs stable
+rs.Heartbeat:Connect(function()
+    if not plr.Character then refreshChar() end
+end)
+
+-- to do list: Jukebox, Main Geode UI and Design, Styles (like the dark mode mod in geometry dash for example), And a script hosting api for users to make their own scripts for the mod, will automatically be removed if it leads to inappropriate levels or has vulgure comments inside the script, and should have a decent moderation team. Request Cru or Voidy to do the script hosting api, Change Soundlink to replace the actual Level.Data.Song instead of creating an overlay song instead (for audio scale to work), Preload Death Effects, Icons, Game Resources, Ect.
