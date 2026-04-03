@@ -1,0 +1,352 @@
+if getgenv().Animator6DLoadedPro then return end
+getgenv().Animator6DLoadedPro = true
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+
+local LocalAssetCache = {}
+local fullModel = nil
+
+pcall(function()
+	fullModel = game:GetObjects("rbxassetid://107495486817639")[1]
+	if fullModel then fullModel.Parent = workspace end
+end)
+
+local function loadAsset(id)
+	id = tostring(id):gsub("^rbxassetid://", "")
+	if LocalAssetCache[id] then return LocalAssetCache[id] end
+
+	if fullModel then
+		local found = fullModel:FindFirstChild(id, true)
+		if found then
+			LocalAssetCache[id] = found
+			return found
+		end
+	end
+
+	local ok, obj = pcall(function()
+		return game:GetObjects("rbxassetid://" .. id)[1]
+	end)
+
+	if ok and obj then
+		LocalAssetCache[id] = obj
+		return obj
+	end
+
+	return nil
+end
+
+local R6Map = {
+	["Head"]      = "Neck",
+	["Torso"]     = "RootJoint",
+	["Right Arm"] = "Right Shoulder",
+	["Left Arm"]  = "Left Shoulder",
+	["Right Leg"] = "Right Hip",
+	["Left Leg"]  = "Left Hip"
+}
+
+local function parseSequence(kfs)
+	if typeof(kfs) == "Instance" and not kfs:IsA("KeyframeSequence") then
+		for _, obj in ipairs(kfs:GetDescendants()) do
+			if obj:IsA("KeyframeSequence") then
+				kfs = obj
+				break
+			end
+		end
+	end
+
+	assert(kfs and kfs:IsA("KeyframeSequence"), "Expected KeyframeSequence")
+
+	local frames = {}
+	for _, frame in ipairs(kfs:GetKeyframes()) do
+		local entry = { Time = frame.Time, Poses = {} }
+		for _, pose in ipairs(frame:GetDescendants()) do
+			if pose:IsA("Pose") and pose.Weight > 0 then
+				entry.Poses[pose.Name] = {
+					CFrame     = pose.CFrame,
+					EasingStyle     = pose.EasingStyle,
+					EasingDirection = pose.EasingDirection
+				}
+			end
+		end
+		table.insert(frames, entry)
+	end
+
+	table.sort(frames, function(a, b) return a.Time < b.Time end)
+	return frames, kfs.Loop
+end
+
+local function buildMotorMap(rig)
+	local map, lower = {}, {}
+	for _, m in ipairs(rig:GetDescendants()) do
+		if m:IsA("Motor6D") then
+			map[m.Name] = m
+			lower[m.Name:lower()] = m
+		end
+	end
+	return map, lower
+end
+
+local function findMotor(name, map, lower)
+	local mapped = R6Map[name] or name
+	return map[mapped] or lower[mapped:lower()]
+end
+
+local function easingAlpha(alpha, style, direction)
+	local s = Enum.EasingStyle
+	local d = Enum.EasingDirection
+
+	if style == s.Linear then
+		return alpha
+
+	elseif style == s.Sine then
+		if direction == d.In then
+			return 1 - math.cos(alpha * math.pi / 2)
+		elseif direction == d.Out then
+			return math.sin(alpha * math.pi / 2)
+		else
+			return -(math.cos(math.pi * alpha) - 1) / 2
+		end
+
+	elseif style == s.Quad then
+		if direction == d.In then
+			return alpha * alpha
+		elseif direction == d.Out then
+			return 1 - (1 - alpha)^2
+		else
+			return alpha < 0.5 and 2*alpha*alpha or 1 - (-2*alpha+2)^2/2
+		end
+
+	elseif style == s.Cubic then
+		if direction == d.In then
+			return alpha^3
+		elseif direction == d.Out then
+			return 1 - (1 - alpha)^3
+		else
+			return alpha < 0.5 and 4*alpha^3 or 1 - (-2*alpha+2)^3/2
+		end
+
+	elseif style == s.Bounce then
+		local function bounceOut(t)
+			if t < 1/2.75 then
+				return 7.5625*t*t
+			elseif t < 2/2.75 then
+				t = t - 1.5/2.75
+				return 7.5625*t*t + 0.75
+			elseif t < 2.5/2.75 then
+				t = t - 2.25/2.75
+				return 7.5625*t*t + 0.9375
+			else
+				t = t - 2.625/2.75
+				return 7.5625*t*t + 0.984375
+			end
+		end
+		if direction == d.Out then
+			return bounceOut(alpha)
+		elseif direction == d.In then
+			return 1 - bounceOut(1 - alpha)
+		else
+			return alpha < 0.5 and (1 - bounceOut(1 - 2*alpha))/2 or (1 + bounceOut(2*alpha - 1))/2
+		end
+
+	elseif style == s.Back then
+		local c = 1.70158
+		if direction == d.In then
+			return (c+1)*alpha^3 - c*alpha^2
+		elseif direction == d.Out then
+			return 1 + (c+1)*(alpha-1)^3 + c*(alpha-1)^2
+		else
+			local c2 = c * 1.525
+			return alpha < 0.5
+				and ((2*alpha)^2*((c2+1)*2*alpha - c2))/2
+				or ((2*alpha-2)^2*((c2+1)*(2*alpha-2) + c2) + 2)/2
+		end
+
+	elseif style == s.Elastic then
+		local c = (2*math.pi)/3
+		if direction == d.In then
+			return alpha == 0 and 0 or alpha == 1 and 1
+				or -(2^(10*alpha-10)) * math.sin((alpha*10-10.75)*c)
+		elseif direction == d.Out then
+			return alpha == 0 and 0 or alpha == 1 and 1
+				or 2^(-10*alpha) * math.sin((alpha*10-0.75)*c) + 1
+		else
+			local c2 = (2*math.pi)/4.5
+			return alpha == 0 and 0 or alpha == 1 and 1
+				or alpha < 0.5
+				and -(2^(20*alpha-10) * math.sin((20*alpha-11.125)*c2))/2
+				or (2^(-20*alpha+10) * math.sin((20*alpha-11.125)*c2))/2 + 1
+		end
+	end
+
+	return alpha
+end
+
+local AnimPlayer = {}
+AnimPlayer.__index = AnimPlayer
+
+function AnimPlayer.new(rig, kfs)
+	local self = setmetatable({}, AnimPlayer)
+	self.rig       = rig
+	self.frames, self.looped = parseSequence(kfs)
+	self.map, self.lower     = buildMotorMap(rig)
+	self.length    = self.frames[#self.frames].Time
+	self.time      = 0
+	self.speed     = 1
+	self.playing   = false
+	self.savedC0   = {}
+
+	for _, motor in pairs(self.map) do
+		self.savedC0[motor] = motor.C0
+	end
+
+	return self
+end
+
+function AnimPlayer:_sampleFrame()
+	local prevFrame, nextFrame = self.frames[1], self.frames[#self.frames]
+
+	for i = 1, #self.frames - 1 do
+		if self.frames[i].Time <= self.time and self.frames[i+1].Time >= self.time then
+			prevFrame = self.frames[i]
+			nextFrame = self.frames[i+1]
+			break
+		end
+	end
+
+	local segLen = nextFrame.Time - prevFrame.Time
+	local alpha  = segLen > 0 and (self.time - prevFrame.Time) / segLen or 1
+
+	local allJoints = {}
+	for joint in pairs(prevFrame.Poses) do allJoints[joint] = true end
+	for joint in pairs(nextFrame.Poses) do allJoints[joint] = true end
+
+	for joint in pairs(allJoints) do
+		local motor = findMotor(joint, self.map, self.lower)
+		if motor and self.savedC0[motor] then
+			local pPose = prevFrame.Poses[joint]
+			local nPose = nextFrame.Poses[joint]
+
+			if pPose and nPose then
+				local easedAlpha = easingAlpha(
+					alpha,
+					nPose.EasingStyle or Enum.EasingStyle.Linear,
+					nPose.EasingDirection or Enum.EasingDirection.InOut
+				)
+				local interpolated = pPose.CFrame:Lerp(nPose.CFrame, easedAlpha)
+				pcall(function()
+					motor.C0 = self.savedC0[motor] * interpolated
+				end)
+			elseif pPose then
+				pcall(function()
+					motor.C0 = self.savedC0[motor] * pPose.CFrame
+				end)
+			elseif nPose then
+				pcall(function()
+					motor.C0 = self.savedC0[motor] * nPose.CFrame
+				end)
+			end
+		end
+	end
+end
+
+function AnimPlayer:Play(speed, looped)
+	if self.playing then return end
+	self.playing = true
+	self.speed   = speed or 1
+	self.looped  = looped == nil and true or looped
+	self.time    = 0
+
+	self.conn = RunService.RenderStepped:Connect(function(dt)
+		if not self.playing then return end
+
+		self.time += dt * self.speed
+
+		if self.time >= self.length then
+			if self.looped then
+				self.time = self.time % self.length
+			else
+				self.time = self.length
+				self:_sampleFrame()
+				self:Stop(true)
+				return
+			end
+		end
+
+		self:_sampleFrame()
+	end)
+end
+
+function AnimPlayer:Stop(restore)
+	self.playing = false
+	if self.conn then
+		self.conn:Disconnect()
+		self.conn = nil
+	end
+	if restore then
+		for motor, originalC0 in pairs(self.savedC0) do
+			pcall(function() motor.C0 = originalC0 end)
+		end
+	end
+end
+
+local function suppressDefaultAnims(char)
+	local animScript = char:FindFirstChild("Animate")
+	if animScript then animScript.Disabled = true end
+
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
+			track:Stop(0)
+		end
+	end
+end
+
+getgenv().Animator6D = function(idOrInstance, speed, looped)
+	local kfs
+
+	if typeof(idOrInstance) == "Instance" then
+		kfs = idOrInstance:IsA("KeyframeSequence") and idOrInstance
+			or idOrInstance:FindFirstChildOfClass("KeyframeSequence")
+			or (function()
+				for _, d in ipairs(idOrInstance:GetDescendants()) do
+					if d:IsA("KeyframeSequence") then return d end
+				end
+			end)()
+	else
+		local asset = loadAsset(idOrInstance)
+		if asset then
+			kfs = asset:IsA("KeyframeSequence") and asset
+				or asset:FindFirstChildOfClass("KeyframeSequence")
+				or (function()
+					for _, d in ipairs(asset:GetDescendants()) do
+						if d:IsA("KeyframeSequence") then return d end
+					end
+				end)()
+		end
+	end
+
+	if not kfs then return end
+
+	suppressDefaultAnims(character)
+
+	if getgenv().currentAnimator6D then
+		pcall(function() getgenv().currentAnimator6D:Stop(true) end)
+		getgenv().currentAnimator6D = nil
+	end
+
+	local anim = AnimPlayer.new(character, kfs)
+	getgenv().currentAnimator6D = anim
+	anim:Play(speed or 1, looped)
+end
+
+getgenv().Animator6DStop = function()
+	if getgenv().currentAnimator6D then
+		pcall(function() getgenv().currentAnimator6D:Stop(true) end)
+		getgenv().currentAnimator6D = nil
+	end
+end
