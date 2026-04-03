@@ -144,16 +144,28 @@ function AnimPlayer.new(rig, kfs)
 	self.time            = 0
 	self.speed           = 1
 	self.playing         = false
-	self.savedC0         = {}
-	for _, motor in pairs(self.map) do
-		self.savedC0[motor] = motor.C0
-	end
 	return self
 end
 
-function AnimPlayer:_sample()
+function AnimPlayer:_sample(dt)
+	self.time += dt * self.speed
+	if self.time >= self.length then
+		if self.looped then
+			self.time = self.time % self.length
+		else
+			self.time = self.length
+			self:_write()
+			self:Stop()
+			return
+		end
+	end
+	self:_write()
+end
+
+function AnimPlayer:_write()
 	local prev = self.frames[1]
 	local next = self.frames[#self.frames]
+
 	for i = 1, #self.frames - 1 do
 		if self.frames[i].Time <= self.time and self.frames[i+1].Time >= self.time then
 			prev = self.frames[i]
@@ -171,7 +183,7 @@ function AnimPlayer:_sample()
 
 	for joint in pairs(joints) do
 		local motor = findMotor(joint, self.map, self.lower)
-		if motor and self.savedC0[motor] then
+		if motor then
 			local pPose = prev.Poses[joint]
 			local nPose = next.Poses[joint]
 			local cf
@@ -190,10 +202,12 @@ function AnimPlayer:_sample()
 			end
 
 			if cf then
-				-- Write to C0 on RenderStepped (last moment before frame renders).
-				-- This is after physics has finished for the frame so nothing
-				-- stomps us before the pixels hit the screen.
-				pcall(function() motor.C0 = self.savedC0[motor] * cf end)
+				-- Write to Transform at Character+1 priority.
+				-- The Animator writes at Character priority every frame.
+				-- By binding one step higher we always fire AFTER it,
+				-- so our transform is the absolute last write before render.
+				-- This kills the teleport glitch completely.
+				pcall(function() motor.Transform = cf end)
 			end
 		end
 	end
@@ -217,35 +231,38 @@ function AnimPlayer:Play(speed, looped)
 	end
 
 	self._animScript = animScript
+	self._bindName   = "Animator6D_" .. tostring(math.random(1, 999999))
 
-	-- RenderStepped fires once per rendered frame, after physics,
-	-- right before the frame is drawn. This is the correct place to
-	-- write joint transforms for smooth 60fps visual playback.
-	self.conn = RunService.RenderStepped:Connect(function(dt)
-		if not self.playing then return end
-		self.time += dt * self.speed
-		if self.time >= self.length then
-			if self.looped then
-				self.time = self.time % self.length
-			else
-				self.time = self.length
-				self:_sample()
-				self:Stop()
-				return
-			end
+	-- Character+1 fires after Roblox's own character animation system.
+	-- This is the only priority that guarantees we always win against
+	-- the Animator object overwriting our transforms.
+	RunService:BindToRenderStep(
+		self._bindName,
+		Enum.RenderPriority.Character.Value + 1,
+		function(dt)
+			if not self.playing then return end
+			self:_sample(dt)
 		end
-		self:_sample()
-	end)
+	)
 end
 
 function AnimPlayer:Stop()
 	self.playing = false
-	if self.conn then self.conn:Disconnect() self.conn = nil end
-	for motor, originalC0 in pairs(self.savedC0) do
-		pcall(function() motor.C0 = originalC0 end)
+
+	if self._bindName then
+		RunService:UnbindFromRenderStep(self._bindName)
+		self._bindName = nil
 	end
+
+	-- Reset all transforms to identity so the Animator
+	-- takes back over cleanly on the next frame.
+	for _, motor in pairs(self.map) do
+		pcall(function() motor.Transform = CFrame.identity end)
+	end
+
 	if self._animScript then
 		self._animScript.Disabled = false
+		self._animScript = nil
 	end
 end
 
