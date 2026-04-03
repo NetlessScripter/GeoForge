@@ -1,7 +1,7 @@
 if getgenv().Animator6DLoadedPro then return end
 getgenv().Animator6DLoadedPro = true
 
-local Players   = game:GetService("Players")
+local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local player    = Players.LocalPlayer
@@ -18,24 +18,12 @@ end)
 local function loadAsset(id)
 	id = tostring(id):gsub("^rbxassetid://", "")
 	if LocalAssetCache[id] then return LocalAssetCache[id] end
-
 	if fullModel then
 		local found = fullModel:FindFirstChild(id, true)
-		if found then
-			LocalAssetCache[id] = found
-			return found
-		end
+		if found then LocalAssetCache[id] = found return found end
 	end
-
-	local ok, obj = pcall(function()
-		return game:GetObjects("rbxassetid://" .. id)[1]
-	end)
-
-	if ok and obj then
-		LocalAssetCache[id] = obj
-		return obj
-	end
-
+	local ok, obj = pcall(function() return game:GetObjects("rbxassetid://" .. id)[1] end)
+	if ok and obj then LocalAssetCache[id] = obj return obj end
 	return nil
 end
 
@@ -50,12 +38,11 @@ local R6Map = {
 
 local function parseSequence(kfs)
 	if typeof(kfs) == "Instance" and not kfs:IsA("KeyframeSequence") then
-		for _, obj in ipairs(kfs:GetDescendants()) do
-			if obj:IsA("KeyframeSequence") then kfs = obj break end
+		for _, d in ipairs(kfs:GetDescendants()) do
+			if d:IsA("KeyframeSequence") then kfs = d break end
 		end
 	end
 	assert(kfs and kfs:IsA("KeyframeSequence"), "Expected KeyframeSequence")
-
 	local frames = {}
 	for _, frame in ipairs(kfs:GetKeyframes()) do
 		local entry = { Time = frame.Time, Poses = {} }
@@ -78,8 +65,8 @@ local function buildMotorMap(rig)
 	local map, lower = {}, {}
 	for _, m in ipairs(rig:GetDescendants()) do
 		if m:IsA("Motor6D") then
-			map[m.Name]            = m
-			lower[m.Name:lower()]  = m
+			map[m.Name] = m
+			lower[m.Name:lower()] = m
 		end
 	end
 	return map, lower
@@ -95,25 +82,17 @@ local function applyEasing(alpha, style, dir)
 	if style == S.Linear then
 		return alpha
 	elseif style == S.Sine then
-		if dir == D.In  then return 1 - math.cos(alpha * math.pi * 0.5)
+		if dir == D.In then return 1 - math.cos(alpha * math.pi * 0.5)
 		elseif dir == D.Out then return math.sin(alpha * math.pi * 0.5)
 		else return -(math.cos(math.pi * alpha) - 1) * 0.5 end
 	elseif style == S.Quad then
-		if dir == D.In  then return alpha * alpha
+		if dir == D.In then return alpha * alpha
 		elseif dir == D.Out then return 1 - (1 - alpha)^2
-		else return alpha < 0.5 and 2*alpha*alpha or 1-((-2*alpha+2)^2)*0.5 end
+		else return alpha < 0.5 and 2*alpha^2 or 1 - (-2*alpha+2)^2 * 0.5 end
 	elseif style == S.Cubic then
-		if dir == D.In  then return alpha^3
-		elseif dir == D.Out then return 1-(1-alpha)^3
-		else return alpha < 0.5 and 4*alpha^3 or 1-((-2*alpha+2)^3)*0.5 end
-	elseif style == S.Quart then
-		if dir == D.In  then return alpha^4
-		elseif dir == D.Out then return 1-(1-alpha)^4
-		else return alpha < 0.5 and 8*alpha^4 or 1-((-2*alpha+2)^4)*0.5 end
-	elseif style == S.Quint then
-		if dir == D.In  then return alpha^5
-		elseif dir == D.Out then return 1-(1-alpha)^5
-		else return alpha < 0.5 and 16*alpha^5 or 1-((-2*alpha+2)^5)*0.5 end
+		if dir == D.In then return alpha^3
+		elseif dir == D.Out then return 1 - (1 - alpha)^3
+		else return alpha < 0.5 and 4*alpha^3 or 1 - (-2*alpha+2)^3 * 0.5 end
 	elseif style == S.Bounce then
 		local function bo(t)
 			if t < 1/2.75 then return 7.5625*t*t
@@ -122,28 +101,32 @@ local function applyEasing(alpha, style, dir)
 			else t=t-2.625/2.75 return 7.5625*t*t+0.984375 end
 		end
 		if dir == D.Out then return bo(alpha)
-		elseif dir == D.In then return 1-bo(1-alpha)
-		else return alpha<0.5 and (1-bo(1-2*alpha))*0.5 or (1+bo(2*alpha-1))*0.5 end
+		elseif dir == D.In then return 1 - bo(1 - alpha)
+		else return alpha < 0.5 and (1 - bo(1-2*alpha))*0.5 or (1 + bo(2*alpha-1))*0.5 end
 	elseif style == S.Back then
 		local c = 1.70158
 		if dir == D.In then return (c+1)*alpha^3 - c*alpha^2
-		elseif dir == D.Out then return 1+(c+1)*(alpha-1)^3+c*(alpha-1)^2
+		elseif dir == D.Out then return 1 + (c+1)*(alpha-1)^3 + c*(alpha-1)^2
 		else
-			local c2 = c*1.525
-			return alpha<0.5 and ((2*alpha)^2*((c2+1)*2*alpha-c2))*0.5
-				or ((2*alpha-2)^2*((c2+1)*(2*alpha-2)+c2)+2)*0.5
+			local c2 = c * 1.525
+			return alpha < 0.5
+				and ((2*alpha)^2 * ((c2+1)*2*alpha - c2)) * 0.5
+				or  ((2*alpha-2)^2 * ((c2+1)*(2*alpha-2) + c2) + 2) * 0.5
 		end
 	elseif style == S.Elastic then
 		local c = (2*math.pi)/3
 		if dir == D.In then
-			return alpha==0 and 0 or alpha==1 and 1 or -(2^(10*alpha-10))*math.sin((alpha*10-10.75)*c)
+			return alpha == 0 and 0 or alpha == 1 and 1
+				or -(2^(10*alpha-10)) * math.sin((alpha*10 - 10.75)*c)
 		elseif dir == D.Out then
-			return alpha==0 and 0 or alpha==1 and 1 or 2^(-10*alpha)*math.sin((alpha*10-0.75)*c)+1
+			return alpha == 0 and 0 or alpha == 1 and 1
+				or 2^(-10*alpha) * math.sin((alpha*10 - 0.75)*c) + 1
 		else
 			local c2 = (2*math.pi)/4.5
-			return alpha==0 and 0 or alpha==1 and 1 or alpha<0.5
-				and -(2^(20*alpha-10)*math.sin((20*alpha-11.125)*c2))*0.5
-				or  (2^(-20*alpha+10)*math.sin((20*alpha-11.125)*c2))*0.5+1
+			return alpha == 0 and 0 or alpha == 1 and 1
+				or alpha < 0.5
+				and -(2^(20*alpha-10) * math.sin((20*alpha - 11.125)*c2)) * 0.5
+				or   (2^(-20*alpha+10) * math.sin((20*alpha - 11.125)*c2)) * 0.5 + 1
 		end
 	end
 	return alpha
@@ -154,20 +137,23 @@ AnimPlayer.__index = AnimPlayer
 
 function AnimPlayer.new(rig, kfs)
 	local self = setmetatable({}, AnimPlayer)
-	self.rig               = rig
+	self.rig             = rig
 	self.frames, self.looped = parseSequence(kfs)
-	self.map, self.lower   = buildMotorMap(rig)
-	self.length            = self.frames[#self.frames].Time
-	self.time              = 0
-	self.speed             = 1
-	self.playing           = false
+	self.map, self.lower = buildMotorMap(rig)
+	self.length          = self.frames[#self.frames].Time
+	self.time            = 0
+	self.speed           = 1
+	self.playing         = false
+	self.savedC0         = {}
+	for _, motor in pairs(self.map) do
+		self.savedC0[motor] = motor.C0
+	end
 	return self
 end
 
 function AnimPlayer:_sample()
 	local prev = self.frames[1]
 	local next = self.frames[#self.frames]
-
 	for i = 1, #self.frames - 1 do
 		if self.frames[i].Time <= self.time and self.frames[i+1].Time >= self.time then
 			prev = self.frames[i]
@@ -185,7 +171,7 @@ function AnimPlayer:_sample()
 
 	for joint in pairs(joints) do
 		local motor = findMotor(joint, self.map, self.lower)
-		if motor then
+		if motor and self.savedC0[motor] then
 			local pPose = prev.Poses[joint]
 			local nPose = next.Poses[joint]
 			local cf
@@ -204,11 +190,10 @@ function AnimPlayer:_sample()
 			end
 
 			if cf then
-				-- Write to Transform, not C0.
-				-- Transform is what the Roblox Animator uses.
-				-- We fire on PreSimulation which runs AFTER the Animator
-				-- has written for the frame, so we always override cleanly.
-				pcall(function() motor.Transform = cf end)
+				-- Write to C0 on RenderStepped (last moment before frame renders).
+				-- This is after physics has finished for the frame so nothing
+				-- stomps us before the pixels hit the screen.
+				pcall(function() motor.C0 = self.savedC0[motor] * cf end)
 			end
 		end
 	end
@@ -221,13 +206,24 @@ function AnimPlayer:Play(speed, looped)
 	self.looped  = looped == nil and true or looped
 	self.time    = 0
 
-	-- PreSimulation fires after PreAnimation (where Animator writes transforms).
-	-- Writing here means our values always land last, overriding the Animator
-	-- every single frame with zero fighting and zero scratchiness.
-	self.conn = RunService.PreSimulation:Connect(function(dt)
+	local animScript = self.rig:FindFirstChild("Animate")
+	if animScript then animScript.Disabled = true end
+
+	local hum = self.rig:FindFirstChildOfClass("Humanoid")
+	if hum then
+		for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
+			track:Stop(0)
+		end
+	end
+
+	self._animScript = animScript
+
+	-- RenderStepped fires once per rendered frame, after physics,
+	-- right before the frame is drawn. This is the correct place to
+	-- write joint transforms for smooth 60fps visual playback.
+	self.conn = RunService.RenderStepped:Connect(function(dt)
 		if not self.playing then return end
 		self.time += dt * self.speed
-
 		if self.time >= self.length then
 			if self.looped then
 				self.time = self.time % self.length
@@ -238,22 +234,18 @@ function AnimPlayer:Play(speed, looped)
 				return
 			end
 		end
-
 		self:_sample()
 	end)
 end
 
 function AnimPlayer:Stop()
 	self.playing = false
-	if self.conn then
-		self.conn:Disconnect()
-		self.conn = nil
+	if self.conn then self.conn:Disconnect() self.conn = nil end
+	for motor, originalC0 in pairs(self.savedC0) do
+		pcall(function() motor.C0 = originalC0 end)
 	end
-	-- Reset all transforms to identity.
-	-- The Animator immediately takes back over on the next PreAnimation.
-	-- Default animations resume with zero extra work.
-	for _, motor in pairs(self.map) do
-		pcall(function() motor.Transform = CFrame.identity end)
+	if self._animScript then
+		self._animScript.Disabled = false
 	end
 end
 
@@ -270,13 +262,11 @@ end
 
 getgenv().Animator6D = function(idOrInstance, speed, looped)
 	local kfs
-
 	if typeof(idOrInstance) == "Instance" then
 		kfs = findKFS(idOrInstance)
 	else
 		kfs = findKFS(loadAsset(idOrInstance))
 	end
-
 	if not kfs then return end
 
 	if getgenv().currentAnimator6D then
