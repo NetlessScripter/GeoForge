@@ -6,7 +6,7 @@
 -- in between.
 local EVENT_CONFIG = {
 	Chance         = 0.003,        -- 0.30% chance per roll (default/max)
-	CheckInterval  = 1,            -- seconds between percentage rolls
+	CheckInterval  = 100,            -- seconds between percentage rolls
 	OverrideUser   = "Hitmeforgamepass",
 	OverridePhrase = "Punishment-Mode",
 }
